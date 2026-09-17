@@ -33,7 +33,7 @@ SSH into your Raspberry Pi and set up the project:
 
 ```bash
 # Clone repository
-git clone [https://github.com/YOUR-USERNAME/sigenergy-home-system.git](https://github.com/YOUR-USERNAME/sigenergy-home-system.git)
+git clone [https://github.com/pixelrunner/sigenergy-home-system.git](https://github.com/pixelrunner/sigenergy-home-system.git)
 cd sigenergy-home-system/raspberry-pi
 
 # Create and activate Python virtual environment
