@@ -216,3 +216,19 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ==========================================
+# Sigenergy & Presto Custom Project Rules
+# ==========================================
+
+# --- Secrets & Private Credentials ---
+credentials.json
+secrets.py
+*.env
+
+# --- Embedded Hardware & Launcher Artifacts ---
+launch.txt
+/ramfs/
+
+# --- Virtual Environments (Custom Name) ---
+sigenergy-env/
