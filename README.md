@@ -1,5 +1,29 @@
-# sigenergy_home_system
-A few apps and dashboards for my Sigenergy Home System
+# Sigenergy Home Dashboard
+
+An interactive, real-time home energy monitoring system designed for the **Pimoroni Presto** (RP2350) display, powered by a lightweight **Raspberry Pi** backend daemon interfacing with the **Sigenergy Open API**.
+
+---
+
+## System Architecture Overview
+
+To circumvent direct microcontroller cloud authentication overhead and rate limits, the system operates on a 2-tier local architecture:
+
+### Key Components
+
+* **Raspberry Pi Backend (`raspberry-pi/`)**
+  * Periodically polls Sigenergy's `/openapi/systems/{systemId}/energyFlow` endpoint[cite: 3].
+  * Manages signature hashing (`SHA256`) and OAuth tokens[cite: 3].
+  * Caches telemetry and serves a clean, lightweight JSON endpoint on local port `5000`[cite: 3].
+  * Features a 5-minute staleness guard to flag lost cloud connectivity gracefully[cite: 3].
+
+* **Pimoroni Presto Display (`presto-app/`)**
+  * Written in MicroPython using `PicoVector` for typography and UI elements.
+  * Displays dynamic metrics for **Solar Generation**, **House Load**, **EVAC Charger Draw**, and **Grid Import/Export**.
+  * Features a custom retro Windows 3.1-style battery state-of-charge (SOC) progress bar.
+  * Adjusts UI color themes and rear LED backlighting dynamically based on system state (Red for Grid Import, Yellow for Excess Solar, Green for Self-Sufficiency/Battery Discharge).
+  * Includes a long-press touch-to-exit handler that triggers a hardware reboot back to the primary device menu/launcher.
+
+---
 
 ## Raspberry Pi Setup
 
