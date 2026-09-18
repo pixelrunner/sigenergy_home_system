@@ -1,0 +1,14 @@
+[Unit]
+Description=Sigenergy Energy Monitor Local API Server
+After=network.target
+
+[Service]
+Type=simple
+User=webs_admin
+WorkingDirectory=/home/webs_admin/sigenergy-env
+ExecStart=/home/webs_admin/sigenergy-env/bin/python3 /home/webs_admin/sigenergy-env/server.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
