@@ -123,7 +123,7 @@ To ensure `server.py` starts automatically and remains running after reboots, co
    ```
 
 2. **Paste the following configuration:**
-   ``gini
+   ```ini
    [Unit]
    Description=Sigenergy Energy Monitor Local API Server
    After=network.target
