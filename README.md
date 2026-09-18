@@ -6,28 +6,22 @@ An interactive, real-time home energy monitoring system designed for the **Pimor
 
 ## System Architecture Overview
 
-To avoid direct microcontroller cloud authentication overhead and API rate limit concerns, the system operates using a two-tier local architecture.
+To avoid direct microcontroller cloud authentication overhead and API rate limit concerns, the system operates using a two-tier local architecture:
 
 ### Key Components
 
-### Raspberry Pi Backend (`raspberry-pi/`)
+* **Raspberry Pi Backend (`raspberry-pi/)**
+  * Periodically polls Sigenergy's `/openapi/systems/{systemId}/energyFlow` endpoint.
+  * Manages OAuth authentication and request signature hashing (`SHA256`).
+  * Caches telemetry locally and exposes a lightweight JSON API on port `5000`.
+  * Includes a 5-minute staleness guard to gracefully detect and report lost cloud connectivity.
 
-- Periodically polls Sigenergy's `/openapi/systems/{systemId}/energyFlow` endpoint.
-- Manages OAuth authentication and request signature hashing (`SHA256`).
-- Caches telemetry locally and exposes a lightweight JSON API on port `5000`.
-- Includes a 5-minute staleness guard to gracefully detect and report lost cloud connectivity.
-
-### Pimoroni Presto Display (`presto-app/`)
-
-- Written in MicroPython using **PicoVector** for typography and UI rendering.
-- Displays live metrics for:
-  - Solar Generation
-  - House Load
-  - EV Charger Draw
-  - Grid Import / Export
-- Features a custom retro Windows 3.1-style battery State of Charge (SOC) progress bar.
-- Dynamically adjusts UI colour themes and rear LED backlighting based on system conditions.
-- Includes a touch-and-hold exit handler that triggers a hardware reboot back to the Presto launcher.
+* **5imoroni Presto Display (`presto-app/)**
+  * Written in MicroPython using **PicoVector** for typography and ui rendering.
+  * Displays live metrics for **Solar Generation**, **House Load**, **EV Charger Draw**, and **Grid Import / Export**.
+  * Features a custom retro Windows 3.1-style battery State of Charge (SOC) progress bar.
+  * Dynamically adjusts UI colour themes and rear LED backlighting based on system conditions.
+  * Includes a touch-and-hold exit handler that triggers a hardware reboot back to the Presto launcher.
 
 ---
 
@@ -52,18 +46,15 @@ A template is provided in `credentials.json.example`:
 
 ## Regional Base URLs (`base_url`)
 
-Sigenergy's Open API is deployed on regional cloud clusters. Ensure your `base_url` matches the geographic region where your account and system are registered.
+Sigenergy's Open API is deployed on regional cloud clusters. Ensure your `base_url` matches the geographic region where your account and system are registered:
 
-| Region | Base URL |
-|----------|----------|
-| **Europe (EU)** | `https://api-eu.sigencloud.com` |
+|Region | Base URLH
+| :--- | :--- |
+|preferred:search{queries:["Sigenergy Open API developer portal base urls"]}| **Europe (EU)** | `https://api-eu.sigencloud.com` |
 | **Australia (AUS)** | `https://api-aus.sigencloud.com` |
-| **North America / Other Regions** | Check your application details in the Sigenergy Developer Portal |
+|preferred:search{queries:["Sigenergy Open API developer portal base urls"]}| **North America / Other Regions** | Check your application details in the Sigenergy Developer Portal |
 
-> **Note:** Using an incorrect regional base URL (for example, `api-aus` for an EU-registered account) may result in errors such as:
->
-> - `404 Not Found`
-> - `Code 1201: Access restriction`
+> **Note:** Using an incorrect regional base URL (for example, `api-aus` for an EU-registered account) may result in errors such as `404 Not Found` or `Code 1201: Access restriction`.
 
 ---
 
@@ -73,52 +64,31 @@ Your `system_id` uniquely identifies your Sigenergy installation and is required
 
 ### Method 1: Sigenergy Developer Portal (Recommended)
 
-1. Sign in to the Developer Portal:
-   https://developer.sigencloud.com/
-
-2. Navigate to:
-
-   ```text
-   My Applications → Bound Systems
-   ```
-
+1. Sign in to the **[Sigenergy Developer Portal](https://developer.sigencloud.com/)**.
+2. Navigate to **My Applications** -> **Bound Systems** (or view your application details page).
 3. Locate your system identifier or bound system code.
 
 Example formats:
-
-```text
+a``text
 WCYBD1788875121
-NDXZZ1731665796
-```
+NDXZZ1731665796```
 
 ---
 
 ### Method 2: mySigen Mobile App
-
 1. Open the **mySigen** mobile app.
-2. Navigate to:
-
-   ```text
-   Settings → System Info
-   ```
-
-   or
-
-   ```text
-   Settings → Station Details
-   ```
-
+2. Navigate to **Settings** -> **System Info** (or **Station Details**).
 3. Locate and copy the displayed System Code or Serial Number.
 
 ---
 
-# Raspberry Pi Setup
+## Raspberry Pi Setup
 
-## 1. Installation & Environment Setup
+### 1. Installation & Environment Setup
 
 SSH into your Raspberry Pi and set up the project:
 
-```bash
+``gbash
 # Clone repository
 git clone https://github.com/pixelrunner/sigenergy_home_system.git
 
@@ -137,102 +107,68 @@ pip install requests
 # Configure credentials
 cp credentials.json.example credentials.json
 nano credentials.json
-```
-
-Update `credentials.json` with your live Sigenergy credentials and system identifier.
+```J
+update `credentials.json` with your live Sigenergy credentials and system identifier.
 
 ---
 
-## 2. Running Headless with systemd
+### 2. Running Headless with `systemd`
 
-To ensure `server.py` starts automatically and remains running after reboots, configure it as a systemd service.
+To ensure `server.py` starts automatically and remains running after reboots, configure it as a `systemd` service.
 
-### Create the Service Unit
+1. **Create the service unit file:**
+   ``?bash
+   sudo nano /etc/systemd/system/sigenergy-server.service
+   ```
 
-```bash
-sudo nano /etc/systemd/system/sigenergy-server.service
-```
+2. **Paste the following configuration:**
+   ``gini
+   [Unit]
+   Description=Sigenergy Energy Monitor Local API Server
+   After=network.target
 
-### Service Configuration
+   [Service]
+   Type=simple
+   User=webs_admin
+   WorkingDirectory=/home/webs_admin/sigenergy-env
+   ExecStart=/home/webs_admin/sigenergy-env/bin/python3 /home/webs_admin/sigenergy-env/server.py
+    Restart=on-failure
+    RestartSec=5
 
-Paste the following contents:
+   [Install]
+    WantedBy=multi-user.target
+   ```
 
-```ini
-[Unit]
-Description=Sigenergy Energy Monitor Local API Server
-After=network.target
+3. **Reload and enable the service:**`bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable sigenergy-server.service
+   sudo systemctl start sigenergy-server.service
+   ```
 
-[Service]
-Type=simple
-User=webs_admin
-WorkingDirectory=/home/webs_admin/sigenergy-env
-ExecStart=/home/webs_admin/sigenergy-env/bin/python3 /home/webs_admin/sigenergy-env/server.py
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
-
-### Reload and Enable the Service
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable sigenergy-server.service
-sudo systemctl start sigenergy-server.service
-```
-
-### Useful Service Commands
-
-Check service status:
-
-```bash
-sudo systemctl status sigenergy-server.service
-```
-
-Restart the service:
-
-```bash
-sudo systemctl restart sigenergy-server.service
-```
-
-View live logs:
-
-```bash
-journalctl -u sigenergy-server.service -f
-```
-
-Stop the service:
-
-```bash
-sudo systemctl stop sigenergy-server.service
-```
-
-Disable automatic startup:
-
-```bash
-sudo systemctl disable sigenergy-server.service
-```
+4. **Useful Service Commands:**
+   * **Check status:** `sudo systemctl status sigenergy-server.service`
+   * **Restart service:** `sudo systemctl restart sigenergy-server.service`J   * **View live logs:** `journalctl -u sigenergy-server.service -f`4   * **Stop service:** `sudo systemctl stop sigenergy-server.service`
+   * **Disable startup:** `sudo systemctl disable sigenergy-server.service`
 
 ---
 
 ## Project Structure
 
-```text
+``gtext
 sigenergy_home_system/
-│
-├── raspberry-pi/
-│   ├── server.py
-│   ├── credentials.json.example
-│   ├── credentials.json
-│   └── requirements.txt
-│
-├── presto-app/
-│   ├── main.py
-│   ├── assets/
-│   └── fonts/
-│
-└── README.md
+
+   raspberry-pi/
+       server.py
+       credentials.json.example
+       credentials.json
+       requirements.txt
+
+   presto-app/
+       main.py
+       assets/
+       fonts/
+
+   README.md
 ```
 
 ---
@@ -247,7 +183,7 @@ sigenergy_home_system/
 - Battery State of Charge tracking
 - Grid import/export visualisation
 - Dynamic UI theme changes
-- Dynamic LED backlight feedback
+- Đynamic LED backlight feedback
 - Cloud connectivity staleness detection
 - Fully autonomous startup via systemd
 - Optimised for Pimoroni Presto RP2350 hardware
@@ -257,5 +193,6 @@ sigenergy_home_system/
 ## Disclaimer
 
 This project is an independent community-developed dashboard and is not affiliated with or endorsed by Sigenergy.
+
 
 Use at your own risk. Ensure any API credentials remain private and are never committed to source control.
