@@ -16,7 +16,7 @@ To avoid direct microcontroller cloud authentication overhead and API rate limit
   * Caches telemetry locally and exposes a lightweight JSON API on port `5000`.
   * Includes a 5-minute staleness guard to gracefully detect and report lost cloud connectivity.
 
-* **5imoroni Presto Display (`presto-app/)**
+* **Pimoroni Presto Display (`presto-app/`)**
   * Written in MicroPython using **PicoVector** for typography and ui rendering.
   * Displays live metrics for **Solar Generation**, **House Load**, **EV Charger Draw**, and **Grid Import / Export**.
   * Features a custom retro Windows 3.1-style battery State of Charge (SOC) progress bar.
@@ -48,11 +48,11 @@ A template is provided in `credentials.json.example`:
 
 Sigenergy's Open API is deployed on regional cloud clusters. Ensure your `base_url` matches the geographic region where your account and system are registered:
 
-|Region | Base URLH
+| Region | Base URL |
 | :--- | :--- |
-|preferred:search{queries:["Sigenergy Open API developer portal base urls"]}| **Europe (EU)** | `https://api-eu.sigencloud.com` |
+| **Europe (EU)** | `https://api-eu.sigencloud.com` |
 | **Australia (AUS)** | `https://api-aus.sigencloud.com` |
-|preferred:search{queries:["Sigenergy Open API developer portal base urls"]}| **North America / Other Regions** | Check your application details in the Sigenergy Developer Portal |
+| **North America / Other Regions** | Check your application details in the Sigenergy Developer Portal |
 
 > **Note:** Using an incorrect regional base URL (for example, `api-aus` for an EU-registered account) may result in errors such as `404 Not Found` or `Code 1201: Access restriction`.
 
@@ -69,9 +69,10 @@ Your `system_id` uniquely identifies your Sigenergy installation and is required
 3. Locate your system identifier or bound system code.
 
 Example formats:
-a``text
-WCYBD1788875121
-NDXZZ1731665796```
+```text
+WCNBD1785875121
+NDXPZ1731665296
+```
 
 ---
 
@@ -88,7 +89,7 @@ NDXZZ1731665796```
 
 SSH into your Raspberry Pi and set up the project:
 
-``gbash
+```bash
 # Clone repository
 git clone https://github.com/pixelrunner/sigenergy_home_system.git
 
@@ -107,7 +108,7 @@ pip install requests
 # Configure credentials
 cp credentials.json.example credentials.json
 nano credentials.json
-```J
+```
 update `credentials.json` with your live Sigenergy credentials and system identifier.
 
 ---
@@ -117,7 +118,7 @@ update `credentials.json` with your live Sigenergy credentials and system identi
 To ensure `server.py` starts automatically and remains running after reboots, configure it as a `systemd` service.
 
 1. **Create the service unit file:**
-   ``?bash
+   ```bash
    sudo nano /etc/systemd/system/sigenergy-server.service
    ```
 
@@ -147,14 +148,16 @@ To ensure `server.py` starts automatically and remains running after reboots, co
 
 4. **Useful Service Commands:**
    * **Check status:** `sudo systemctl status sigenergy-server.service`
-   * **Restart service:** `sudo systemctl restart sigenergy-server.service`J   * **View live logs:** `journalctl -u sigenergy-server.service -f`4   * **Stop service:** `sudo systemctl stop sigenergy-server.service`
+   * **Restart service:** `sudo systemctl restart sigenergy-server.service`
+   * **View live logs:** `journalctl -u sigenergy-server.service -f`
+   * **Stop service:** `sudo systemctl stop sigenergy-server.service`
    * **Disable startup:** `sudo systemctl disable sigenergy-server.service`
 
 ---
 
 ## Project Structure
 
-``gtext
+```text
 sigenergy_home_system/
 
    raspberry-pi/
