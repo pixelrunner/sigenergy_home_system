@@ -140,13 +140,14 @@ To ensure `server.py` starts automatically and remains running after reboots, co
     WantedBy=multi-user.target
    ```
 
-3. **Reload and enable the service:**`bash
+3. **Reload and enable the service:**
+   ```bash
    sudo systemctl daemon-reload
    sudo systemctl enable sigenergy-server.service
    sudo systemctl start sigenergy-server.service
    ```
 
-4. **Useful Service Commands:**
+5. **Useful Service Commands:**
    * **Check status:** `sudo systemctl status sigenergy-server.service`
    * **Restart service:** `sudo systemctl restart sigenergy-server.service`
    * **View live logs:** `journalctl -u sigenergy-server.service -f`
