@@ -104,3 +104,18 @@ A template is provided in `credentials.json.example`:
   "password": "YOUR_PASSWORD_HERE",
   "system_id": "YOUR_SYSTEM_ID_HERE"
 }
+```
+
+### How to Find Your `system_id`
+
+Your `system_id` is the unique identifier assigned to your Sigenergy power station[cite: 2]. You can locate it using either of the following methods[cite: 2]:
+
+#### Method 1: Sigenergy Developer Portal (Recommended)
+1. Sign in to the **[Sigenergy Developer Portal](https://developer.sigencloud.com/)**[cite: 2].
+2. Navigate to **My Applications** $\rightarrow$ **Bound Systems** (or view your application details page)[cite: 2].
+3. Locate your bound station serial number or system code (typically formatted as a string such as `WCYBD1788875121` or `NDXZZ1731665796`)[cite: 2].
+
+#### Method 2: MySigen Mobile App
+1. Open the **mySigen** app on your mobile device.
+2. Go to **Settings** $\rightarrow$ **System Info** (or **Station Details**).
+3. Copy the **System Code** / **Serial Number** listed under your station details.
