@@ -88,3 +88,19 @@ To ensure `server.py` runs continuously in the background and restarts automatic
    * **Check status:** `sudo systemctl status sigenergy-server.service`
    * **Restart server:** `sudo systemctl restart sigenergy-server.service`
    * **View live logs:** `journalctl -u sigenergy-server.service -f`
+
+## Configuration & Configuration Files
+
+Before running the backend server or diagnostic scripts, you must create a local `credentials.json` file inside the `raspberry-pi/` folder. 
+
+A template is provided in `credentials.json.example`:
+
+```json
+{
+  "base_url": "[https://api-eu.sigencloud.com](https://api-eu.sigencloud.com)",
+  "app_key": "YOUR_APP_KEY_HERE",
+  "app_secret": "YOUR_APP_SECRET_HERE",
+  "username": "YOUR_EMAIL_HERE",
+  "password": "YOUR_PASSWORD_HERE",
+  "system_id": "YOUR_SYSTEM_ID_HERE"
+}
