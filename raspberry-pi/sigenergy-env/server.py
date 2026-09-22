@@ -1,319 +1,196 @@
-# ICON monitoring
-# NAME Solar & Energy
-# DESC Live Solar, House Load, EVAC, Grid & Battery Monitor (480x480)
-
+import os
+import json
 import time
-import network
-import urequests
-import secrets
-import gc
-import machine
-from presto import Presto
-from picovector import ANTIALIAS_BEST, PicoVector, Polygon, Transform
+import hashlib
+import requests
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from sigenergy_auth import get_token
+import socket
+from pymodbus.client import ModbusTcpClient
 
-# --- Configuration ---
-PI_API_URL = "http://172.18.2.2:5000/api/dashboard"
+INVERTER_IP = "172.18.4.20"  # Sigenergy inverter's static IP address
 
-DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+# 1. Load credentials globally at script startup
+CONFIG_PATH = os.path.expanduser('~/sigenergy-env/credentials.json')
+if not os.path.exists(CONFIG_PATH):
+    CONFIG_PATH = 'credentials.json'
 
-# Initialize Presto in native 480x480 resolution mode
-presto = Presto(ambient_light=True, full_res=True)
-display = presto.display
-WIDTH, HEIGHT = display.get_bounds()  # (480, 480)
+with open(CONFIG_PATH, 'r') as f:
+    config = json.load(f)
 
-# Colors
-BLACK = display.create_pen(0, 0, 0)
-WHITE = display.create_pen(255, 255, 255)
-GRAY = display.create_pen(180, 180, 180)
+SYSTEM_ID = config.get("system_id", "WCYBD1788875121")
+APP_SECRET = config.get("app_secret", "")
 
-# Setup PicoVector
-vector = PicoVector(display)
-vector.set_antialiasing(ANTIALIAS_BEST)
-t = Transform()
-t.scale(1.0, 1.0)
-vector.set_font("Roboto-Medium.af", 96)
-vector.set_transform(t)
+# 2. In-Memory Caching (Prevents API rate limits)
+cached_token = None
+cached_base_url = None
+cached_app_key = None
+token_expiry = 0
 
-# --- LOADING SCREEN ---
-display.set_pen(BLACK)
-display.clear()
-display.set_pen(WHITE)
-vector.set_font_size(28)
-_, _, tw, _ = vector.measure_text("Starting Energy Monitor...")
-vector.text("Starting Energy Monitor...", int((WIDTH / 2) - (tw / 2)), HEIGHT // 2)
-presto.update()
+cached_telemetry = None
+last_telemetry_fetch = 0
+TELEMETRY_CACHE_TTL = 15  # Minimum seconds between cloud requests
 
-def connect_wifi():
-    wlan = network.WLAN(network.STA_IF)
-    wlan.active(True)
-    if not wlan.isconnected():
-        wlan.connect(secrets.WIFI_SSID, secrets.WIFI_PASSWORD)
-        timeout = 10
-        while not wlan.isconnected() and timeout > 0:
-            time.sleep(1)
-            timeout -= 1
-    return wlan.isconnected()
 
-# Touch Exit Handler (Long press screen to reboot to main.py)
-is_holding = False
-touch_press_start = 0
+def get_cached_token():
+    global cached_token, cached_base_url, cached_app_key, token_expiry
+    now = time.time()
 
-def check_touch_exit():
-    global is_holding, touch_press_start
-    presto.touch_poll()
-    touched = presto.touch.state
-    current_time_ms = time.ticks_ms()
-
-    if touched and not is_holding:
-        is_holding = True
-        touch_press_start = current_time_ms
-    elif not touched and is_holding:
-        is_holding = False
-
-    if is_holding and time.ticks_diff(current_time_ms, touch_press_start) > 1500:
-        display.set_layer(1)
-        display.set_pen(BLACK)
-        display.clear()
-        display.set_pen(WHITE)
-        vector.set_font_size(24)
-        vector.text("Exiting...", 20, 20)
-        presto.update()
-        time.sleep(0.4)
-        machine.reset()
-
-class Widget(object):
-    def __init__(self, x, y, w, h, radius=12, text_size=28):
-        self.x = x
-        self.y = y
-        self.w = w
-        self.h = h
-        self.r = radius
-        self.text = None
-        self.lines = None
-        self.size = text_size
-        self.title = None
-
-        self.bg = Polygon()
-        self.bg.rectangle(
-            self.x, self.y, self.w, self.h, corners=(self.r, self.r, self.r, self.r)
-        )
-
-    def draw(self, card_pen, text_pen):
-        display.set_pen(card_pen)
-        vector.draw(self.bg)
-
-        # Title
-        if self.title:
-            display.set_pen(text_pen)
-            vector.set_font_size(20)
-            _, _, tw, _ = vector.measure_text(self.title)
-            tx = int((self.x + self.w // 2) - (tw // 2))
-            ty = self.y + 26
-            vector.text(self.title, tx, ty)
-
-        # Multi-line rendering for Grid card (Import & Export)
-        if self.lines:
-            display.set_pen(text_pen)
-            vector.set_font_size(17)
-            start_y = self.y + 60
-            line_height = 26
-            for i, line in enumerate(self.lines):
-                _, _, tw, _ = vector.measure_text(line)
-                tx = int((self.x + self.w // 2) - (tw // 2))
-                ty = start_y + (i * line_height)
-                vector.text(line, tx, ty)
-
-        # Single Value text (Solar, Load, EVAC)
-        elif self.text is not None:
-            display.set_pen(text_pen)
-            vector.set_font_size(self.size)
-            _, _, tw, th = vector.measure_text(self.text)
-            tx = int((self.x + self.w // 2) - (tw // 2))
-            ty = int((self.y + self.h // 2) + (th // 2)) + 10
-            vector.text(self.text, tx, ty)
-
-    def set_label(self, value):
-        if isinstance(value, (list, tuple)):
-            self.lines = value
-            self.text = None
+    # Request a new token only when uninitialized or expired
+    if not cached_token or now >= token_expiry:
+        token, base_url, app_key = get_token()
+        if token:
+            cached_token = token
+            cached_base_url = base_url
+            cached_app_key = app_key
+            token_expiry = now + (10 * 3600)  # Valid for 10 hours
         else:
-            self.text = value
-            self.lines = None
+            return None, None, None
 
-    def set_title(self, title):
-        self.title = title
+    return cached_token, cached_base_url, cached_app_key
 
-# Pre-allocate Battery Progress Bar Card
-bat_card = Polygon()
-bat_card.rectangle(20, 325, 440, 135, corners=(12, 12, 12, 12))
 
-def draw_battery_progress_bar(soc, card_pen, text_pen):
-    display.set_pen(card_pen)
-    vector.draw(bat_card)
+def fetch_telemetry_data():
+    global cached_telemetry, last_telemetry_fetch
+    now = time.time()
 
-    display.set_pen(text_pen)
-    vector.set_font_size(22)
-    soc_text = f"BATTERY SOC: {soc:.1f}%" if soc is not None else "BATTERY SOC: --%"
-    vector.text(soc_text, 40, 358)
+    # Serve cached response if within TTL window
+    if cached_telemetry and (now - last_telemetry_fetch < TELEMETRY_CACHE_TTL):
+        return cached_telemetry
 
-    # Windows 3.1 Progress Bar Frame
-    bar_x, bar_y, bar_w, bar_h = 40, 375, 400, 48
-    display.set_pen(BLACK)
-    display.rectangle(bar_x, bar_y, bar_w, bar_h)
-    display.set_pen(GRAY)
-    display.rectangle(bar_x + 2, bar_y + 2, bar_w - 4, bar_h - 4)
+    token, base_url, app_key = get_cached_token()
+    if not token:
+        return cached_telemetry or {"error": "Authentication failed"}
 
-    # 10 Gradient Blocks (Red -> Yellow -> Green)
-    total_blocks = 10
-    block_spacing = 4
-    usable_w = bar_w - 8 - (block_spacing * (total_blocks - 1))
-    block_w = usable_w // total_blocks
-    block_h = bar_h - 10
+    ts_ms = str(int(now * 1000))
+    sign_str = f"{app_key}{ts_ms}{APP_SECRET}"
+    signature = hashlib.sha256(sign_str.encode('utf-8')).hexdigest()
 
-    fill_ratio = max(0.0, min(1.0, soc / 100.0)) if soc is not None else 0.0
-    filled_blocks = int(fill_ratio * total_blocks)
-    partial_block_ratio = (fill_ratio * total_blocks) - filled_blocks
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+        "x-sigen-access-token": token,
+        "x-sigen-app-key": app_key,
+        "x-sigen-timestamp": ts_ms,
+        "x-sigen-sign": signature
+    }
 
-    def block_color(i):
-        hue = 0.0 + (0.33 * (i / 9))
-        return display.create_pen_hsv(hue, 0.9, 0.95)
+    url = f"{base_url}/openapi/systems/{SYSTEM_ID}/energyFlow"
 
-    for i in range(total_blocks):
-        bx = bar_x + 4 + i * (block_w + block_spacing)
-        by = bar_y + 5
-
-        if i < filled_blocks:
-            display.set_pen(block_color(i))
-            display.rectangle(bx, by, block_w, block_h)
-        elif i == filled_blocks and partial_block_ratio > 0:
-            pw = int(block_w * partial_block_ratio)
-            if pw > 0:
-                display.set_pen(block_color(i))
-                display.rectangle(bx, by, pw, block_h)
-
-# --- 2x2 Grid Layout ---
-widgets = [
-    Widget(20, 50, 210, 125, 12, 28),   # Solar
-    Widget(250, 50, 210, 125, 12, 28),  # Load
-    Widget(20, 185, 210, 125, 12, 28),  # EVAC
-    Widget(250, 185, 210, 125, 12, 28)  # Grid
-]
-
-widgets[0].set_title("Solar")
-widgets[1].set_title("Load")
-widgets[2].set_title("EVAC")
-widgets[3].set_title("Grid")
-
-connect_wifi()
-
-last_fetch = 0
-data = None
-current_hue = None
-
-while True:
-    check_touch_exit()
-
-    # Poll API every 5 seconds
-    if time.time() - last_fetch > 5 or data is None:
-        # Check Wi-Fi status cleanly without disconnecting
-        connect_wifi()
-
-        res = None
-        try:
-            res = urequests.get(PI_API_URL)
-            if res.status_code == 200:
-                data = res.json()
-            else:
-                data = None
-        except Exception as e:
-            print("Fetch error:", e)
-            data = None
-        finally:
-            if res:
-                try:
-                    res.close()
-                except:
-                    pass
-            gc.collect()
-            last_fetch = time.time()
-
-    if data and "error" not in data and not data.get("is_stale", False):
-        pv_power = data.get('pv_power_kw', 0.0)
-        grid_power = data.get('grid_power_kw', 0.0)
-        load_power = data.get('load_power_kw', 0.0)
-        ev_power = data.get('ev_power_kw', 0.0)
-        battery_soc = data.get('battery_soc', 0.0)
-
-        grid_imp = max(0.0, grid_power)
-        grid_exp = max(0.0, -grid_power)
-
-        if grid_power > 0.05:
-            target_hue = 0.0   # Red
-        elif pv_power > (load_power + ev_power):
-            target_hue = 0.15  # Yellow
-        else:
-            target_hue = 0.33  # Green
-
-        widgets[0].set_label(f"{pv_power:.2f} kW")
-        widgets[1].set_label(f"{load_power:.2f} kW")
-        widgets[2].set_label(f"{ev_power:.2f} kW")
-        widgets[3].set_label([
-            f"Imp: {grid_imp:.2f} kW",
-            f"Exp: {grid_exp:.2f} kW"
-        ])
-    else:
-        target_hue = 0.33
-        battery_soc = None
-        widgets[0].set_label("- -")
-        widgets[1].set_label("- -")
-        widgets[2].set_label("- -")
-        widgets[3].set_label(["Imp: - -", "Exp: - -"])
-
-    if current_hue != target_hue:
-        current_hue = target_hue
-        for i in range(7):
-            presto.set_led_hsv(i, current_hue, 1.0, 0.5)
-
-    pen_bg = display.create_pen_hsv(current_hue, 0.65, 0.85)
-    pen_box = display.create_pen_hsv(current_hue, 0.40, 1.00)
-    pen_text = display.create_pen_hsv(current_hue, 0.9, 0.15)
-
-    display.set_pen(pen_bg)
-    display.clear()
-
-    # --- Header: Time (Left) & Date (Right) ---
     try:
-        if data and "timestamp" in data and data["timestamp"]:
-            ts = int(data["timestamp"])
-            if ts > 3000000000:
-                ts = ts // 1000
-            t_tuple = time.localtime(ts)
+        res = requests.get(url, headers=headers, timeout=10)
+        res_json = res.json()
+        if res_json.get("code") == 0:
+            data_raw = json.loads(res_json.get("data", "{}"))
+
+            raw_ev = data_raw.get("evPower", 0.0)
+            raw_ac = data_raw.get("acPower", 0.0)
+            raw_load = data_raw.get("loadPower", 0.0)
+
+            # EV power fallback if EV charger draw is routed via AC power
+            ev_kw = raw_ev if raw_ev > 0.0 else raw_ac
+
+            cached_telemetry = {
+                "timestamp": res_json.get("timestamp"),
+                "pv_power_kw": data_raw.get("pvPower", 0.0),
+                "grid_power_kw": data_raw.get("gridPower", 0.0),
+                "battery_power_kw": data_raw.get("batteryPower", 0.0),
+                "load_power_kw": raw_load,
+                "ac_power_kw": raw_ac,
+                "battery_soc": data_raw.get("batterySoc", 0.0),
+                "ev_power_kw": ev_kw,
+                "heat_pump_power_kw": data_raw.get("heatPumpPower", 0.0)
+            }
+            last_telemetry_fetch = now
+            return cached_telemetry
         else:
-            t_tuple = time.localtime()
-    except Exception:
-        t_tuple = time.localtime()
+            return cached_telemetry or {"error": res_json.get("msg", "API Error")}
+    except Exception as e:
+        return cached_telemetry or {"error": str(e)}
 
-    year, month, mday, hour, minute, _, weekday, _ = t_tuple
-    time_str = f"{hour:02d}:{minute:02d}"
-    date_str = f"{DAYS[weekday]} {mday} {MONTHS[month - 1]} {year}"
+def check_modbus_status():
+    status = {
+        "port_open": False,
+        "read_ok": False,
+        "write_ok": False,
+        "message": "Unknown",
+    }
 
-    display.set_pen(pen_text)
-    vector.set_font_size(26)
+    # 1. Test raw TCP Port 502 connectivity
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(3.0)
+    result = sock.connect_ex((INVERTER_IP, 502))
+    sock.close()
 
-    # Time (Left Aligned)
-    vector.text(time_str, 20, 34)
+    if result != 0:
+        status["message"] = "Port 502 Refused / Offline"
+        return status
 
-    # Date (Right Aligned)
-    _, _, tw, _ = vector.measure_text(date_str)
-    vector.text(date_str, int(WIDTH - 20 - tw), 34)
+    status["port_open"] = True
 
-    # Draw Grid Cards
-    for w in widgets:
-        w.draw(pen_box, pen_text)
+    # 2. Test Modbus TCP Read and Write Access
+    client = ModbusTcpClient(INVERTER_IP, port=502, timeout=3)
+    if client.connect():
+        # Attempt to read holding registers (Unit ID 1 or 247)
+        res_read = client.read_holding_registers(address=0, count=1, slave=1)
+        if not res_read.isError():
+            status["read_ok"] = True
 
-    # Draw Battery Progress Bar
-    draw_battery_progress_bar(battery_soc, pen_box, pen_text)
+            # Attempt a safe test write (writing back existing value or checking response exception)
+            # Note: Modbus Write Permission OFF returns Exception Code 01 or 02
+            current_val = res_read.registers[0]
+            res_write = client.write_register(
+                address=0, value=current_val, slave=1
+            )
 
-    presto.update()
-    time.sleep(0.1)
+            if not res_write.isError():
+                status["write_ok"] = True
+                status["message"] = "Modbus TCP Read/Write Active!"
+            else:
+                status["message"] = "Read OK | Write Permission Disabled"
+        else:
+            status["message"] = "Connected | Modbus Read Failed"
+        client.close()
+    else:
+        status["message"] = "Modbus TCP Handshake Failed"
+
+    return status
+
+class DashboardRequestHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/api/dashboard':
+            payload = fetch_telemetry_data()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps(payload).encode('utf-8'))
+	elif self.path == '/api/modbus/test':
+            payload = check_modbus_status()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps(payload).encode('utf-8'))
+        else:
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b'{"error": "Not Found"}')
+
+    def log_message(self, format, *args):
+        # Suppress standard HTTP request logging
+        return
+
+
+def run_server(port=5000):
+    server_address = ('', port)
+    httpd = HTTPServer(server_address, DashboardRequestHandler)
+    print(f"--- Sigenergy LAN Dashboard API running on http://0.0.0.0:{port}/api/dashboard ---")
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\nShutting down server.")
+
+
+if __name__ == '__main__':
+    run_server()
