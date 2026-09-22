@@ -1,3 +1,4 @@
+import os
 import json
 import time
 import hashlib
@@ -5,9 +6,18 @@ import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from sigenergy_auth import get_token
 
-SYSTEM_ID = config.get("system_id", "")
+# 1. Load credentials globally at script startup
+CONFIG_PATH = os.path.expanduser('~/sigenergy-env/credentials.json')
+if not os.path.exists(CONFIG_PATH):
+    CONFIG_PATH = 'credentials.json'
 
-# --- In-Memory Caching ---
+with open(CONFIG_PATH, 'r') as f:
+    config = json.load(f)
+
+SYSTEM_ID = config.get("system_id", "WCYBD1788875121")
+APP_SECRET = config.get("app_secret", "")
+
+# 2. In-Memory Caching (Prevents API rate limits)
 cached_token = None
 cached_base_url = None
 cached_app_key = None
@@ -15,12 +25,14 @@ token_expiry = 0
 
 cached_telemetry = None
 last_telemetry_fetch = 0
-TELEMETRY_CACHE_TTL = 300  # Minimum 60 seconds between Sigenergy Cloud requests
+TELEMETRY_CACHE_TTL = 15  # Minimum seconds between cloud requests
+
 
 def get_cached_token():
     global cached_token, cached_base_url, cached_app_key, token_expiry
     now = time.time()
-
+    
+    # Request a new token only when uninitialized or expired
     if not cached_token or now >= token_expiry:
         token, base_url, app_key = get_token()
         if token:
@@ -30,14 +42,15 @@ def get_cached_token():
             token_expiry = now + (10 * 3600)  # Valid for 10 hours
         else:
             return None, None, None
-
+            
     return cached_token, cached_base_url, cached_app_key
+
 
 def fetch_telemetry_data():
     global cached_telemetry, last_telemetry_fetch
     now = time.time()
 
-    # Serve cached response if pulled within the TTL window
+    # Serve cached response if within TTL window
     if cached_telemetry and (now - last_telemetry_fetch < TELEMETRY_CACHE_TTL):
         return cached_telemetry
 
@@ -45,12 +58,8 @@ def fetch_telemetry_data():
     if not token:
         return cached_telemetry or {"error": "Authentication failed"}
 
-    with open('credentials.json', 'r') as f:
-        config = json.load(f)
-    app_secret = config.get('app_secret', '')
-
     ts_ms = str(int(now * 1000))
-    sign_str = f"{app_key}{ts_ms}{app_secret}"
+    sign_str = f"{app_key}{ts_ms}{APP_SECRET}"
     signature = hashlib.sha256(sign_str.encode('utf-8')).hexdigest()
 
     headers = {
@@ -64,32 +73,37 @@ def fetch_telemetry_data():
 
     url = f"{base_url}/openapi/systems/{SYSTEM_ID}/energyFlow"
 
-    # Always update fetch timestamp to prevent rapid retry loops on errors
-    last_telemetry_fetch = now
-
     try:
         res = requests.get(url, headers=headers, timeout=10)
         res_json = res.json()
-
         if res_json.get("code") == 0:
             data_raw = json.loads(res_json.get("data", "{}"))
+            
+            raw_ev = data_raw.get("evPower", 0.0)
+            raw_ac = data_raw.get("acPower", 0.0)
+            raw_load = data_raw.get("loadPower", 0.0)
+            
+            # EV power fallback if EV charger draw is routed via AC power
+            ev_kw = raw_ev if raw_ev > 0.0 else raw_ac
+
             cached_telemetry = {
                 "timestamp": res_json.get("timestamp"),
                 "pv_power_kw": data_raw.get("pvPower", 0.0),
                 "grid_power_kw": data_raw.get("gridPower", 0.0),
                 "battery_power_kw": data_raw.get("batteryPower", 0.0),
-                "load_power_kw": data_raw.get("loadPower", 0.0),
+                "load_power_kw": raw_load,
+                "ac_power_kw": raw_ac,
                 "battery_soc": data_raw.get("batterySoc", 0.0),
-                "ev_power_kw": data_raw.get("acPower", 0.0),
+                "ev_power_kw": ev_kw,
                 "heat_pump_power_kw": data_raw.get("heatPumpPower", 0.0)
             }
+            last_telemetry_fetch = now
             return cached_telemetry
         else:
-            print(f"Sigenergy API Response: {res_json}")
-            # Fall back to previous valid payload if available during rate limits
             return cached_telemetry or {"error": res_json.get("msg", "API Error")}
     except Exception as e:
         return cached_telemetry or {"error": str(e)}
+
 
 class DashboardRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -106,7 +120,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(b'{"error": "Not Found"}')
 
     def log_message(self, format, *args):
+        # Suppress standard HTTP request logging
         return
+
 
 def run_server(port=5000):
     server_address = ('', port)
@@ -116,6 +132,7 @@ def run_server(port=5000):
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\nShutting down server.")
+
 
 if __name__ == '__main__':
     run_server()
