@@ -11,8 +11,8 @@ import machine
 from presto import Presto
 from picovector import ANTIALIAS_BEST, PicoVector, Polygon, Transform
 
-# --- Configuration ---
-PI_API_URL = "http://172.18.2.2:5000/api/dashboard"
+# Construct API endpoint dynamically from secrets.py
+PI_API_URL = f"{secrets.PI_BASE_URL}/api/dashboard"
 
 DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
