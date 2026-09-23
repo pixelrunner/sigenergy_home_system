@@ -1,45 +1,83 @@
 import json
 import time
-import hashlib
 import requests
 
+CONFIG_PATH = '/home/webs_admin/sigenergy-env/credentials.json'
+TOKEN_CACHE_PATH = '/tmp/sigen_token.json'
+
 def get_token():
-    with open('credentials.json', 'r') as f:
-        config = json.load(f)
+    # 1. Read existing cached token safely
+    try:
+        with open(TOKEN_CACHE_PATH, 'r') as f:
+            cache = json.load(f)
+            if isinstance(cache, dict) and time.time() < cache.get("expiry", 0):
+                return cache.get("token"), cache.get("base_url"), cache.get("app_key")
+    except Exception:
+        pass
 
-    base_url = config.get('base_url', 'https://api-eu.sigencloud.com').rstrip('/')
-    app_key = config['app_key']
-    app_secret = config['app_secret']
-    username = config['username']
-    password = config['password']
+    # 2. Load configuration file safely
+    try:
+        with open(CONFIG_PATH, 'r') as f:
+            config = json.load(f)
+            if not isinstance(config, dict):
+                print("Auth Config Error: credentials.json is not a JSON object.")
+                return None, None, None
+    except Exception as e:
+        print(f"Auth Config Error: {e}")
+        return None, None, None
 
-    timestamp = str(int(time.time() * 1000))
-    sign_str = f"{app_key}{timestamp}{app_secret}"
-    signature = hashlib.sha256(sign_str.encode('utf-8')).hexdigest()
-
-    headers = {
-        "Content-Type": "application/json",
-        "x-sigen-app-key": app_key,
-        "x-sigen-timestamp": timestamp,
-        "x-sigen-sign": signature
-    }
+    base_url = config.get("base_url", "https://api-eu.sigencloud.com").rstrip('/')
+    app_key = config.get("app_key", "")
+    username = config.get("username", "")
+    password = config.get("password", "")
 
     url = f"{base_url}/openapi/auth/login/password"
-    payload = {"username": username, "password": password}
+    headers = {"Content-Type": "application/json"}
+    payload = {
+        "username": username,
+        "password": password
+    }
 
-    res = requests.post(url, headers=headers, json=payload, timeout=10)
-    res.raise_for_status()
-    data = res.json()
+    try:
+        res = requests.post(url, json=payload, headers=headers, timeout=10)
+        res_json = res.json()
+        if isinstance(res_json, dict) and res_json.get("code") in (0, 200):
+            data = res_json.get("data", {})
+            if isinstance(data, str):
+                try:
+                    data = json.loads(data)
+                except Exception:
+                    data = {}
+            
+            token = data.get("accessToken") if isinstance(data, dict) else None
+            expires_in = data.get("expiresIn", 43200) if isinstance(data, dict) else 43200
+            
+            if token:
+                token_cache = {
+                    "token": token,
+                    "base_url": base_url,
+                    "app_key": app_key,
+                    "expiry": time.time() + expires_in - 300
+                }
+                with open(TOKEN_CACHE_PATH, 'w') as f:
+                    json.dump(token_cache, f)
+                    
+                return token, base_url, app_key
+            else:
+                print("Auth Error: accessToken missing in response payload.")
+                return None, None, None
+        else:
+            code = res_json.get('code') if isinstance(res_json, dict) else 'Unknown'
+            msg = res_json.get('msg') if isinstance(res_json, dict) else res.text
+            print(f"Auth Cloud Error [{code}]: {msg}")
+            return None, None, None
+    except Exception as e:
+        print(f"Auth Request Exception: {e}")
+        return None, None, None
 
-    if data.get("code") == 0:
-        raw_data = data["data"]
-        token_info = json.loads(raw_data) if isinstance(raw_data, str) else raw_data
-        return token_info.get("accessToken"), base_url, app_key
-    else:
-        print(f"Auth failed: {data}")
-        return None, base_url, app_key
-
-if __name__ == "__main__":
-    token, url, key = get_token()
+if __name__ == '__main__':
+    token, base, key = get_token()
     if token:
-        print(f"Successfully obtained token!\nAccess Token: {token[:25]}...")
+        print(f"Successfully obtained token: {token[:15]}...")
+    else:
+        print("Failed to obtain token.")
