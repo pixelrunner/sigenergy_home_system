@@ -1,69 +1,151 @@
-import os
 import json
 import time
 import hashlib
 import requests
+from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from sigenergy_auth import get_token
-import socket
 from pymodbus.client import ModbusTcpClient
 
-INVERTER_IP = "172.18.4.20"  # Sigenergy inverter's static IP address
+CONFIG_PATH = '/home/webs_admin/sigenergy-env/credentials.json'
 
-# 1. Load credentials globally at script startup
-CONFIG_PATH = os.path.expanduser('~/sigenergy-env/credentials.json')
-if not os.path.exists(CONFIG_PATH):
-    CONFIG_PATH = 'credentials.json'
+# Token & Telemetry Cache Containers
+cached_token_data = {
+    "token": None,
+    "base_url": None,
+    "app_key": None,
+    "expiry": 0
+}
 
-with open(CONFIG_PATH, 'r') as f:
-    config = json.load(f)
+telemetry_cache = {
+    "data": None,
+    "last_fetch": 0
+}
 
-SYSTEM_ID = config.get("system_id", "WCYBD1788875121")
-APP_SECRET = config.get("app_secret", "")
-
-# 2. In-Memory Caching (Prevents API rate limits)
-cached_token = None
-cached_base_url = None
-cached_app_key = None
-token_expiry = 0
-
-cached_telemetry = None
-last_telemetry_fetch = 0
-TELEMETRY_CACHE_TTL = 15  # Minimum seconds between cloud requests
-
+def load_config():
+    try:
+        with open(CONFIG_PATH, 'r') as f:
+            return json.load(f)
+    except Exception:
+        return {}
 
 def get_cached_token():
-    global cached_token, cached_base_url, cached_app_key, token_expiry
+    global cached_token_data
     now = time.time()
-
-    # Request a new token only when uninitialized or expired
-    if not cached_token or now >= token_expiry:
+    
+    if not cached_token_data["token"] or now >= cached_token_data["expiry"]:
         token, base_url, app_key = get_token()
         if token:
-            cached_token = token
-            cached_base_url = base_url
-            cached_app_key = app_key
-            token_expiry = now + (10 * 3600)  # Valid for 10 hours
+            cached_token_data["token"] = token
+            cached_token_data["base_url"] = base_url
+            cached_token_data["app_key"] = app_key
+            cached_token_data["expiry"] = now + (10 * 3600)  # Re-use token for 10 hours
         else:
             return None, None, None
+            
+    return cached_token_data["token"], cached_token_data["base_url"], cached_token_data["app_key"]
 
-    return cached_token, cached_base_url, cached_app_key
+def test_modbus_connection():
+    config = load_config()
+    is_debug = config.get("debug_modbus", True)
+    
+    target_ip = config.get("debug_inverter_ip", "127.0.0.1") if is_debug else config.get("inverter_ip", "172.18.4.20")
+    target_port = config.get("debug_inverter_port", 5020) if is_debug else config.get("inverter_port", 502)
+    
+    now = datetime.now()
+    time_payload = {
+        "timestamp": int(time.time()),
+        "time_str": now.strftime("%H:%M:%S"),
+        "date_str": now.strftime("%a %d %b %Y")
+    }
 
+    client = ModbusTcpClient(target_ip, port=target_port)
+    if not client.connect():
+        return {
+            "port_open": False,
+            "read_ok": False,
+            "write_ok": False,
+            "message": f"Port {target_port} Refused / Offline ({target_ip})",
+            "debug_mode": is_debug,
+            "target_ip": target_ip,
+            **time_payload
+        }
+    
+    try:
+        read_res = client.read_holding_registers(address=1, count=1)
+        read_ok = not read_res.isError()
+        
+        write_res = client.write_register(address=1, value=100)
+        write_ok = not write_res.isError()
+        
+        client.close()
+        return {
+            "port_open": True,
+            "read_ok": read_ok,
+            "write_ok": write_ok,
+            "message": "Modbus TCP Read/Write Active (DEBUG)" if is_debug else "Live Inverter Modbus Active",
+            "debug_mode": is_debug,
+            "target_ip": target_ip,
+            **time_payload
+        }
+    except Exception as e:
+        client.close()
+        return {
+            "port_open": True,
+            "read_ok": False,
+            "write_ok": False,
+            "message": f"Modbus Exception: {str(e)}",
+            "debug_mode": is_debug,
+            "target_ip": target_ip,
+            **time_payload
+        }
 
 def fetch_telemetry_data():
-    global cached_telemetry, last_telemetry_fetch
-    now = time.time()
+    global telemetry_cache
+    config = load_config()
+    is_debug = config.get("debug_modbus", True)
 
-    # Serve cached response if within TTL window
-    if cached_telemetry and (now - last_telemetry_fetch < TELEMETRY_CACHE_TTL):
-        return cached_telemetry
+    now = datetime.now()
+    now_ts = time.time()
+    
+    base_payload = {
+        "timestamp": int(now_ts),
+        "time_str": now.strftime("%H:%M"),
+        "date_str": now.strftime("%a %d %b %Y")
+    }
 
+    # Return local mock data ONLY when Debug Mode is explicitly set to true
+    if is_debug:
+        return {
+            **base_payload,
+            "pv_power_kw": 2.50,
+            "grid_power_kw": 0.00,
+            "battery_power_kw": 1.20,
+            "load_power_kw": 1.30,
+            "battery_soc": 75.0,
+            "ev_power_kw": 0.00,
+            "heat_pump_power_kw": 0.00
+        }
+
+    # Live Mode: Serve cached response if pulled within 300 seconds (5 mins)
+    if telemetry_cache["data"] and (now_ts - telemetry_cache["last_fetch"] < 300):
+        return {
+            **telemetry_cache["data"],
+            **base_payload
+        }
+
+    system_id = config.get("system_id", "WCYBD1788875121")
+    app_secret = config.get("app_secret", "")
+    
     token, base_url, app_key = get_cached_token()
     if not token:
-        return cached_telemetry or {"error": "Authentication failed"}
+        # Fallback to last valid telemetry reading if token refresh fails during Live Mode
+        if telemetry_cache["data"]:
+            return {**telemetry_cache["data"], **base_payload, "is_stale": True}
+        return {"error": "Authentication failed", **base_payload}
 
-    ts_ms = str(int(now * 1000))
-    sign_str = f"{app_key}{ts_ms}{APP_SECRET}"
+    ts_ms = str(int(now_ts * 1000))
+    sign_str = f"{app_key}{ts_ms}{app_secret}"
     signature = hashlib.sha256(sign_str.encode('utf-8')).hexdigest()
 
     headers = {
@@ -75,86 +157,33 @@ def fetch_telemetry_data():
         "x-sigen-sign": signature
     }
 
-    url = f"{base_url}/openapi/systems/{SYSTEM_ID}/energyFlow"
+    url = f"{base_url}/openapi/systems/{system_id}/energyFlow"
 
     try:
         res = requests.get(url, headers=headers, timeout=10)
         res_json = res.json()
         if res_json.get("code") == 0:
             data_raw = json.loads(res_json.get("data", "{}"))
-
-            raw_ev = data_raw.get("evPower", 0.0)
-            raw_ac = data_raw.get("acPower", 0.0)
-            raw_load = data_raw.get("loadPower", 0.0)
-
-            # EV power fallback if EV charger draw is routed via AC power
-            ev_kw = raw_ev if raw_ev > 0.0 else raw_ac
-
-            cached_telemetry = {
-                "timestamp": res_json.get("timestamp"),
+            fetched_data = {
                 "pv_power_kw": data_raw.get("pvPower", 0.0),
                 "grid_power_kw": data_raw.get("gridPower", 0.0),
                 "battery_power_kw": data_raw.get("batteryPower", 0.0),
-                "load_power_kw": raw_load,
-                "ac_power_kw": raw_ac,
+                "load_power_kw": data_raw.get("loadPower", 0.0),
                 "battery_soc": data_raw.get("batterySoc", 0.0),
-                "ev_power_kw": ev_kw,
+                "ev_power_kw": data_raw.get("acPower", 0.0),
                 "heat_pump_power_kw": data_raw.get("heatPumpPower", 0.0)
             }
-            last_telemetry_fetch = now
-            return cached_telemetry
+            telemetry_cache["data"] = fetched_data
+            telemetry_cache["last_fetch"] = now_ts
+            return {**fetched_data, **base_payload}
         else:
-            return cached_telemetry or {"error": res_json.get("msg", "API Error")}
+            if telemetry_cache["data"]:
+                return {**telemetry_cache["data"], **base_payload, "is_stale": True}
+            return {"error": res_json.get("msg", "API Error"), **base_payload}
     except Exception as e:
-        return cached_telemetry or {"error": str(e)}
-
-def check_modbus_status():
-    status = {
-        "port_open": False,
-        "read_ok": False,
-        "write_ok": False,
-        "message": "Unknown",
-    }
-
-    # 1. Test raw TCP Port 502 connectivity
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(3.0)
-    result = sock.connect_ex((INVERTER_IP, 502))
-    sock.close()
-
-    if result != 0:
-        status["message"] = "Port 502 Refused / Offline"
-        return status
-
-    status["port_open"] = True
-
-    # 2. Test Modbus TCP Read and Write Access
-    client = ModbusTcpClient(INVERTER_IP, port=502, timeout=3)
-    if client.connect():
-        # Attempt to read holding registers (Unit ID 1 or 247)
-        res_read = client.read_holding_registers(address=0, count=1, slave=1)
-        if not res_read.isError():
-            status["read_ok"] = True
-
-            # Attempt a safe test write (writing back existing value or checking response exception)
-            # Note: Modbus Write Permission OFF returns Exception Code 01 or 02
-            current_val = res_read.registers[0]
-            res_write = client.write_register(
-                address=0, value=current_val, slave=1
-            )
-
-            if not res_write.isError():
-                status["write_ok"] = True
-                status["message"] = "Modbus TCP Read/Write Active!"
-            else:
-                status["message"] = "Read OK | Write Permission Disabled"
-        else:
-            status["message"] = "Connected | Modbus Read Failed"
-        client.close()
-    else:
-        status["message"] = "Modbus TCP Handshake Failed"
-
-    return status
+        if telemetry_cache["data"]:
+            return {**telemetry_cache["data"], **base_payload, "is_stale": True}
+        return {"error": str(e), **base_payload}
 
 class DashboardRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -165,8 +194,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
             self.wfile.write(json.dumps(payload).encode('utf-8'))
-	elif self.path == '/api/modbus/test':
-            payload = check_modbus_status()
+        elif self.path == '/api/modbus/test':
+            payload = test_modbus_connection()
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Access-Control-Allow-Origin', '*')
@@ -178,19 +207,16 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(b'{"error": "Not Found"}')
 
     def log_message(self, format, *args):
-        # Suppress standard HTTP request logging
         return
-
 
 def run_server(port=5000):
     server_address = ('', port)
     httpd = HTTPServer(server_address, DashboardRequestHandler)
-    print(f"--- Sigenergy LAN Dashboard API running on http://0.0.0.0:{port}/api/dashboard ---")
+    print(f"--- Sigenergy Local API Server running on port {port} ---")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\nShutting down server.")
-
 
 if __name__ == '__main__':
     run_server()
