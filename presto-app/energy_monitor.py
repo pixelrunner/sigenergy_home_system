@@ -3,46 +3,60 @@
 # DESC Live Solar, House Load, EVAC, Grid & Battery Monitor (480x480)
 
 import gc
-import machine
 import network
 import secrets
 import time
+import urequests
 from picovector import ANTIALIAS_BEST, PicoVector, Polygon, Transform
 from presto import Presto
-import urequests
 
+# Construct API URL dynamically from secrets.py
 PI_API_URL = f"{secrets.PI_BASE_URL}/api/dashboard"
 
 DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
+# Setup Presto display in native 480x480 resolution mode
 presto = Presto(ambient_light=True, full_res=True)
 display = presto.display
-WIDTH, HEIGHT = display.get_bounds()
+WIDTH, HEIGHT = display.get_bounds()  # (480, 480)
 
+# Colors
 BLACK = display.create_pen(0, 0, 0)
 WHITE = display.create_pen(255, 255, 255)
 GRAY = display.create_pen(180, 180, 180)
 
+# Setup PicoVector
 vector = PicoVector(display)
 vector.set_antialiasing(ANTIALIAS_BEST)
 t = Transform()
-vector.set_transform(t)
+t.scale(1.0, 1.0)
 vector.set_font("Roboto-Medium.af", 96)
+vector.set_transform(t)
 
-# --- DRAW IMMEDIATE UI FRAME (Eliminates Initial Black Screen Delay) ---
+# --- IMMEDIATE LOADING SCREEN ---
 display.set_pen(BLACK)
 display.clear()
 display.set_pen(WHITE)
-vector.set_font_size(24)
+vector.set_font_size(28)
 _, _, tw, _ = vector.measure_text("Starting Energy Monitor...")
 vector.text("Starting Energy Monitor...", int((WIDTH / 2) - (tw / 2)), HEIGHT // 2)
 presto.update()
 
-# Touch exit tracking (1-second long press)
+def ensure_wifi():
+  wlan = network.WLAN(network.STA_IF)
+  wlan.active(True)
+  if not wlan.isconnected():
+    wlan.connect(secrets.WIFI_SSID, secrets.WIFI_PASSWORD)
+    timeout = 10
+    while not wlan.isconnected() and timeout > 0:
+      time.sleep(1)
+      timeout -= 1
+  return wlan.isconnected()
+
+# Touch Exit Handler
 is_holding = False
 touch_press_start = 0
-
 
 def check_touch_exit():
   global is_holding, touch_press_start
@@ -56,7 +70,8 @@ def check_touch_exit():
   elif not touched and is_holding:
     is_holding = False
 
-  if is_holding and time.ticks_diff(current_time_ms, touch_press_start) > 1000:
+  if is_holding and time.ticks_diff(current_time_ms, touch_press_start) > 1500:
+    display.set_layer(1)
     display.set_pen(BLACK)
     display.clear()
     display.set_pen(WHITE)
@@ -65,19 +80,6 @@ def check_touch_exit():
     presto.update()
     time.sleep(0.4)
     machine.reset()
-
-
-def connect_wifi():
-  wlan = network.WLAN(network.STA_IF)
-  wlan.active(True)
-  if not wlan.isconnected():
-    wlan.connect(secrets.WIFI_SSID, secrets.WIFI_PASSWORD)
-    timeout = 15
-    while not wlan.isconnected() and timeout > 0:
-      time.sleep(1)
-      timeout -= 1
-  return wlan.isconnected()
-
 
 class Widget(object):
 
@@ -138,10 +140,9 @@ class Widget(object):
   def set_title(self, title):
     self.title = title
 
-
+# Pre-allocate Battery Progress Bar Card
 bat_card = Polygon()
 bat_card.rectangle(20, 325, 440, 135, corners=(12, 12, 12, 12))
-
 
 def draw_battery_progress_bar(soc, card_pen, text_pen):
   display.set_pen(card_pen)
@@ -149,9 +150,7 @@ def draw_battery_progress_bar(soc, card_pen, text_pen):
 
   display.set_pen(text_pen)
   vector.set_font_size(22)
-  soc_text = (
-      f"BATTERY SOC: {soc:.1f}%" if soc is not None else "BATTERY SOC: --%"
-  )
+  soc_text = f"BATTERY SOC: {soc:.1f}%" if soc is not None else "BATTERY SOC: --%"
   vector.text(soc_text, 40, 358)
 
   bar_x, bar_y, bar_w, bar_h = 40, 375, 400, 48
@@ -177,7 +176,6 @@ def draw_battery_progress_bar(soc, card_pen, text_pen):
   for i in range(total_blocks):
     bx = bar_x + 4 + i * (block_w + block_spacing)
     by = bar_y + 5
-
     if i < filled_blocks:
       display.set_pen(block_color(i))
       display.rectangle(bx, by, block_w, block_h)
@@ -187,12 +185,11 @@ def draw_battery_progress_bar(soc, card_pen, text_pen):
         display.set_pen(block_color(i))
         display.rectangle(bx, by, pw, block_h)
 
-
 widgets = [
-    Widget(20, 50, 210, 125, 12, 28),
-    Widget(250, 50, 210, 125, 12, 28),
-    Widget(20, 185, 210, 125, 12, 28),
-    Widget(250, 185, 210, 125, 12, 28),
+    Widget(20, 50, 210, 125, 12, 28),  # Solar
+    Widget(250, 50, 210, 125, 12, 28),  # Load
+    Widget(20, 185, 210, 125, 12, 28),  # EVAC
+    Widget(250, 185, 210, 125, 12, 28),  # Grid
 ]
 
 widgets[0].set_title("Solar")
@@ -200,8 +197,7 @@ widgets[1].set_title("Load")
 widgets[2].set_title("EVAC")
 widgets[3].set_title("Grid")
 
-connect_wifi()
-
+ensure_wifi()
 last_fetch = 0
 data = None
 current_hue = None
@@ -210,6 +206,7 @@ while True:
   check_touch_exit()
 
   if time.time() - last_fetch > 5 or data is None:
+    ensure_wifi()
     res = None
     try:
       res = urequests.get(PI_API_URL)
@@ -218,9 +215,7 @@ while True:
       else:
         data = None
     except Exception as e:
-      print("Fetch error:", e)
       data = None
-      connect_wifi()
     finally:
       if res:
         try:
@@ -241,23 +236,23 @@ while True:
     grid_exp = max(0.0, -grid_power)
 
     if grid_power > 0.05:
-      target_hue = 0.0
+      target_hue = 0.0  # Red
     elif pv_power > (load_power + ev_power):
-      target_hue = 0.15
+      target_hue = 0.15  # Yellow
     else:
-      target_hue = 0.33
+      target_hue = 0.33  # Green
 
     widgets[0].set_label(f"{pv_power:.2f} kW")
     widgets[1].set_label(f"{load_power:.2f} kW")
     widgets[2].set_label(f"{ev_power:.2f} kW")
     widgets[3].set_label([f"Imp: {grid_imp:.2f} kW", f"Exp: {grid_exp:.2f} kW"])
   else:
-    target_hue = 0.33
-    battery_soc = None
-    widgets[0].set_label("--")
-    widgets[1].set_label("--")
-    widgets[2].set_label("--")
-    widgets[3].set_label(["Imp: --", "Exp: --"])
+        target_hue = 0.33
+        battery_soc = None
+        widgets[0].set_label("- -")
+        widgets[1].set_label("- -")
+        widgets[2].set_label("- -")
+        widgets[3].set_label(["Imp: - -", "Exp: - -"])
 
   if current_hue != target_hue:
     current_hue = target_hue
@@ -271,19 +266,14 @@ while True:
   display.set_pen(pen_bg)
   display.clear()
 
-  # Dynamic Local Time & Date formatting supplied by Pi System Clock
-  if data and "time_str" in data:
-    time_str = data.get("time_str", "--:--")
-    date_str = data.get("date_str", "")
-  else:
-    t_tuple = time.localtime()
-    time_str = f"{t_tuple[3]:02d}:{t_tuple[4]:02d}"
-    date_str = ""
+  # Server-derived Time & Date Header
+  time_str = data.get("time_str", "") if data else ""
+  date_str = data.get("date_str", "") if data else ""
 
   display.set_pen(pen_text)
-  vector.set_font_size(22)
-  vector.text(time_str, 20, 34)
-
+  vector.set_font_size(26)
+  if time_str:
+    vector.text(time_str, 20, 34)
   if date_str:
     _, _, tw, _ = vector.measure_text(date_str)
     vector.text(date_str, int(WIDTH - 20 - tw), 34)
