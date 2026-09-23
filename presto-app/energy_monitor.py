@@ -11,7 +11,7 @@ from picovector import ANTIALIAS_BEST, PicoVector, Polygon, Transform
 from presto import Presto
 import urequests
 
-PI_API_URL = "http://172.18.2.2:5000/api/dashboard"
+PI_API_URL = f"{secrets.PI_BASE_URL}/api/dashboard"
 
 DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 MONTHS = [
