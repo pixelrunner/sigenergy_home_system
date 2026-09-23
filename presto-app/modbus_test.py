@@ -11,7 +11,7 @@ from picovector import ANTIALIAS_BEST, PicoVector, Polygon, Transform
 from presto import Presto
 import urequests
 
-PI_API_URL = "http://172.18.2.2:5000/api/modbus/test"
+PI_API_URL = f"{secrets.PI_BASE_URL}/api/modbus/test"
 TEST_INTERVAL = 5
 
 presto = Presto(ambient_light=False, full_res=True)
