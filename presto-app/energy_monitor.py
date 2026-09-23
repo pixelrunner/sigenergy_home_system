@@ -14,20 +14,7 @@ import urequests
 PI_API_URL = f"{secrets.PI_BASE_URL}/api/dashboard"
 
 DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-MONTHS = [
-    "Jan",
-    "Feb",
-    "Mar",
-    "Apr",
-    "May",
-    "Jun",
-    "Jul",
-    "Aug",
-    "Sep",
-    "Oct",
-    "Nov",
-    "Dec",
-]
+MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 presto = Presto(ambient_light=True, full_res=True)
 display = presto.display
