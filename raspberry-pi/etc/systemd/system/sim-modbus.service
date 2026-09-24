@@ -1,0 +1,14 @@
+[Unit]
+Description=Local Modbus TCP Simulator
+After=network.target
+
+[Service]
+Type=simple
+User=webs_admin
+WorkingDirectory=/home/webs_admin/sigenergy-env
+ExecStart=/home/webs_admin/sigenergy-env/bin/python3 /home/webs_admin/sigenergy-env/sim_modbus.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
